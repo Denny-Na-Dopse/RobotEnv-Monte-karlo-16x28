@@ -1,0 +1,241 @@
+# -*- coding: utf-8 -*-
+"""                                        Robot_MonteKarlo_XsT-St_USE_16x28.py
+
+                Алгоритм обучения Монте-Карло
+         (Использование оптимальной стратегии из файла)
+   
+    - Работа с окружениями  RobotEnv_*x*_*sT,  
+                            где ориентация перенесена из state в info 
+    - Для предотвращения зацикливания траектории используется 
+      муравьиный алгоритм (карта феромонов)
+    - При отсутствии текущего состояния в полученной оптимальной стратегии
+      выбирается ближайшее состояние из политики. Если это не удаётся - тогда 
+      случайное состояние
+"""
+
+import time 
+start_time = time.time()                         # время начала выполнения, [с] 
+
+import numpy as np
+
+RandomSeed = int(np.random.random()*10**8)       # инициализ.генер.случ.чисел
+np.random.seed(RandomSeed)                 
+print('\n Инициализация генератора случайных плследовательностей')
+print('\n RandomSeed = ', RandomSeed, '\n')
+
+#np.random.seed(68352386)                        # инициализ.генер.случ.чисел
+
+from RobotEnv_16x28_10Sn_St import RobotEnv      # Загрузка испытатедбной среды
+
+
+
+    # ФУНКЦИЯ ДЛЯ ПРИМЕНЕНИЯ ПОЛУЧЕННОЙ СТРАТЕГИИ
+def use_policy(env, policy, determ = 0):
+    """
+        Применение заданной стратегии в заданном окружении (один эпизод)
+        Аргументы:
+            - env:       окружаюшпя среда 
+            - policy:    заданная (оптимальная) политика
+            - determ:    политика вероятностная (0) или детерминированная (1)
+        Возвращает: 
+            - trajectory:      описание траектории в текущем эпизоде
+            - problem_state:   перечень проблеммных состояний 
+            - game_rewards:    суммарная награда в текущем эпизоде
+    """
+    
+    def calc_dP(env, pheromones, yx):
+        """ Вычисление приращения вероятностей действий
+        Аргументы:
+            - env:        окружаюшпя среда 
+            - pheromones: карта распределения феромонов (и препятствий)
+            - yx:         координаты для результата действия
+        Возвращает: 
+            - dPi:        приращение вероятности i-го действия
+        """
+        if (0 <= yx[0] < pheromones.shape[0] and 0 <= yx[1] < pheromones.shape[1]):
+            return pheromones[yx]
+        else:
+            return 1.0
+    
+        # Для формирования карты распадающегося следа
+    pheromones = np.zeros(env._Pole.shape, dtype=float)
+    dP = np.zeros(4, dtype=float)                # приращ.вероятн.выбора действ.
+    
+    state = env.reset()
+    n_action = env.get_actions_number()          # кол-во возм. действий
+    is_done = False                              # флаг завершения эпизода
+    no_ckl_tr = True                             # флаг зацикливания эпизода
+    game_rewards = 0                             # награда в текущем эпизоде
+    
+    problem_state = dict()         # описание проблеммных состояний
+    trajectory = []                # описание траектории [стр., столб., ориент.]
+    
+    while not is_done:
+        
+            # Выбор ближайшего состояния из политики 
+        if state not in policy:                  # состояния нет в политике
+                # Ближайшие направления на цель
+            vT = state[1]
+            RvT = vT + 1
+            if RvT>8: RvT=1
+            LvT = vT - 1
+            if LvT<1: LvT=8
+                # Ближайшее состояние поля впереди
+            if state[0][0] in [0, 11, 13, 21, 23]:
+                BPrf = [0, 11, 13, 21, 23]
+            else:
+                BPrf = [1, 3]
+                # Список ближайших состояний
+            coming_states = []
+            for ivT in [LvT, vT, RvT]:
+                for iPrf in BPrf:
+                    coming_states.append(
+                        ((iPrf, state[0][1], state[0][2], state[0][3]), ivT)  )
+                # Выбор ближайшего состояния
+            for com_st in coming_states:
+                if com_st in policy:
+                    state = com_st
+                    break
+        
+            # Определение действия для заданного состояния
+        if state in policy:                      # сост.есть в политике
+                # Влияние концентрации феромонов на выбор действия
+            actionsP = policy[state] + np.max(pheromones) - dP
+            actionsP = actionsP / sum(actionsP)
+            if determ:
+                    # Детерминированная стратегия
+                action = actionsP.argmax()
+            else:
+                    # Вероятнолстная стратегия
+                action = np.random.choice(env.possible_actions, 1,
+                                          p=actionsP)[0]
+        else:                                    # состояния нет в политике  
+            action = np.random.choice(n_action)
+
+            # Выполнение очередного шага эпизода при жадной стратегии
+        next_state, reward, is_done, yxn = env.step(action)
+        state = next_state
+         
+            # Формирование распадающегося следа
+        pheromones[yxn[0]] += 1.0                   # метка феромона
+        pheromones[pheromones > 0.1] -= 0.02      # распад следа
+        pheromones[env._Pole == 1] = 1           # препятствия выше следа
+        pheromones[env._Pole == 3] = 1           # штрафная клетка выше следа
+    
+           # Приращение вероятностей выбора действий по феромонам
+        if yxn[1]==1:                  # ориентация "вверх"
+            dP[0] = calc_dP(env, pheromones, (yxn[0][0]-1,yxn[0][1])  )          # вперёд
+            dP[1] = calc_dP(env, pheromones, (yxn[0][0]+1,yxn[0][1])  )          # назад
+            dP[2] = (calc_dP(env, pheromones, (yxn[0][0],  yxn[0][1]+1))+1)/2    # направо
+            dP[3] = (calc_dP(env, pheromones, (yxn[0][0],  yxn[0][1]-1))+1)/2    # налево
+        if yxn[1]==2:                  # ориентация "направо"
+            dP[0] = calc_dP(env, pheromones, (yxn[0][0],  yxn[0][1]+1))         # вперёд
+            dP[1] = calc_dP(env, pheromones, (yxn[0][0],  yxn[0][1]-1))         # назад
+            dP[2] = (calc_dP(env, pheromones, (yxn[0][0]+1,yxn[0][1])  )+1)/2   # направо
+            dP[3] = (calc_dP(env, pheromones, (yxn[0][0]-1,yxn[0][1])  )+1)/2   # налево
+        if yxn[1]==3:                  # ориентация "вниз"
+            dP[0] = calc_dP(env, pheromones, (yxn[0][0]+1,yxn[0][1])  )         # вперёд
+            dP[1] = calc_dP(env, pheromones, (yxn[0][0]-1,yxn[0][1])  )         # назад
+            dP[2] = (calc_dP(env, pheromones, (yxn[0][0],  yxn[0][1]-1))+1)/2   # направо
+            dP[3] = (calc_dP(env, pheromones, (yxn[0][0],  yxn[0][1]+1))+1)/2   # налево
+        if yxn[1]==4:                  # ориентация "налевоз"
+            dP[0] = calc_dP(env, pheromones, (yxn[0][0],  yxn[0][1]-1))         # вперёд
+            dP[1] = calc_dP(env, pheromones, (yxn[0][0],  yxn[0][1]+1))         # назад
+            dP[2] = (calc_dP(env, pheromones, (yxn[0][0]-1,yxn[0][1])  )+1)/2   # направо
+            dP[3] = (calc_dP(env, pheromones, (yxn[0][0]+1,yxn[0][1])  )+1)/2   # налево
+    
+            # Сохранение траектории: [строка, столбец, ориентация]
+        tr = [yxn[0][0], yxn[0][1], yxn[1]]
+        trajectory.append(tr)
+    
+        if len(trajectory) > 10000:
+            print('\n РОБОТ ЗАБЛУДИЛСЯ!')
+            break
+    
+            # Проверка зацикливания
+        no_ckl_tr = trajectory[-5:].count(tr) == 1
+    
+        if state not in policy or not no_ckl_tr:     # подсчёт проблеммных состояний
+            if state not in problem_state:
+                problem_state[state] = 1
+            else:
+                problem_state[state] += 1
+    
+            # Накопление наград
+        game_rewards += reward
+
+    return trajectory, problem_state, game_rewards, pheromones
+
+
+
+    # ЗАГРУЗКА СТРАТЕГИИ ИЗ ФАЙЛА
+import pickle
+
+f1 = open('Optimal_policy_1.txt','rb')
+policy_f = pickle.load(f1)
+str_f = pickle.load(f1) 
+RandomSeed_f = pickle.load(f1)
+f1.close() 
+
+print(str_f)
+
+
+
+    # ПРИМЕНЕНИЕ ОБУЧЕННОЙ СТРАТЕГИИ В НОВОМ ЭПИЗОДЕ (настройка среды 0)
+
+#env  = RobotEnv()                                # среда с парам.по умаолчанию
+
+#env  = RobotEnv(initial_position = (0, 0),       # среда с заданными параметрами
+#                initial_orientation = 2,
+#                target_position = (15, 27),
+#                fail_position = (5, 9))
+
+env  = RobotEnv(initial_position = (0, 27),       # среда с заданными параметрами
+                initial_orientation = 2,
+                target_position = (15, 0),
+                fail_position = (5, 9))
+
+
+
+trajectory, problem_state, game_rewards, pheromones = use_policy(env, 
+                                                                 policy_f, 
+                                                                 determ = 1)
+
+print('\n  ПРИМЕНЕНИЕ ПОЛУЧЕННОЙ СТРАТЕГИИ (настройка среды 0)')
+print('Длина траектории: ', len(trajectory))
+print('Полученное вознаграждение: ', game_rewards)
+
+    # ПРИЧИНА БЛУЖДАНИЯ
+for pr_state, pr_num in problem_state.items(): 
+    if pr_state in policy_f:
+        problem_state[pr_state] = [pr_num, "Зацикливание"]
+    else:
+        problem_state[pr_state] = [pr_num, "Нет в политике"]
+print()
+for key, value in problem_state.items():
+    print("{0}: {1}".format(key,value))
+
+print('Проблемных состояний: ', len(problem_state))
+
+
+
+    # ВИЗУАЛИЗАЦИЯ РЕЗУЛЬТАТОВ
+    
+import matplotlib.pyplot as plt
+
+env.render(trajectory)                       # Графическое изображение игрового поля
+plt.show()                                   # отображение графиков перед анимацией
+env.Animation(trajectory)                    # Анимация движения робота по траектории
+
+plt.title('Карта феромонов', color='b', fontsize=14)
+plt.imshow(pheromones, cmap='rainbow', aspect='equal')
+plt.colorbar()
+plt.show()
+
+
+with np.printoptions(precision=2, suppress=True):
+    print(pheromones)
+
+
+#==============================================================================
+print ("\n Время выполнения: %6.2f c" % (time.time()-start_time))
