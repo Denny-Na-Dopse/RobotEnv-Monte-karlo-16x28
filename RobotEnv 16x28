@@ -20,7 +20,7 @@ import numpy as np
 
 RandomSeed = int(np.random.random()*10**8)       # инициализ.генер.случ.чисел
 np.random.seed(RandomSeed)                 
-print('\n Инициализация генератора случайных плследовательностей')
+print('\n Инициализация генератора случайных последовательностей')
 print('\n RandomSeed = ', RandomSeed, '\n')
 
 #np.random.seed(68352386)                        # инициализ.генер.случ.чисел
